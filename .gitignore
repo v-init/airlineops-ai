@@ -1,0 +1,33 @@
+# Python
+pycache/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables / secrets
+.env
+.env.*
+
+# Data
+data/raw/
+data/processed/
+
+# ML artifacts
+artifacts/*.joblib
+
+# Logs
+*.log
