@@ -1,9 +1,7 @@
-from contextlib import (
-    asynccontextmanager,
-)
-
+from contextlib import asynccontextmanager
 from pathlib import Path
 
+import boto3
 import joblib
 import pandas as pd
 
@@ -24,8 +22,33 @@ MODEL_PATH = Path(
 )
 
 
+AWS_REGION = "us-east-1"
+
+DYNAMODB_TABLE = (
+    "airlineops-aircraft-state"
+)
+
+
 model = None
 
+
+# ---------------------------------------------------------
+# DynamoDB
+# ---------------------------------------------------------
+
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=AWS_REGION,
+)
+
+aircraft_table = dynamodb.Table(
+    DYNAMODB_TABLE
+)
+
+
+# ---------------------------------------------------------
+# FastAPI lifespan
+# ---------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(
@@ -39,7 +62,6 @@ async def lifespan(
         f"{MODEL_PATH}"
     )
 
-
     if not MODEL_PATH.exists():
 
         raise RuntimeError(
@@ -47,22 +69,22 @@ async def lifespan(
             f"{MODEL_PATH}"
         )
 
-
     model = joblib.load(
         MODEL_PATH
     )
-
 
     print(
         "Model loaded successfully"
     )
 
-
     yield
-
 
     model = None
 
+
+# ---------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------
 
 app = FastAPI(
 
@@ -82,9 +104,19 @@ app = FastAPI(
 )
 
 
+# ---------------------------------------------------------
+# Request schema
+# ---------------------------------------------------------
+
 class FlightPredictionRequest(
     BaseModel
 ):
+
+    tail_number: str = Field(
+        min_length=4,
+        max_length=10,
+        examples=["N104JB"],
+    )
 
     airline: str = Field(
         min_length=2,
@@ -122,25 +154,22 @@ class FlightPredictionRequest(
         examples=[187],
     )
 
-    previous_arrival_delay: float = (
-        Field(
-            default=0,
-            examples=[35],
-        )
-    )
 
-    aircraft_position_match: int = (
-        Field(
-            default=1,
-            ge=0,
-            le=1,
-        )
-    )
-
+# ---------------------------------------------------------
+# Response schema
+# ---------------------------------------------------------
 
 class PredictionResponse(
     BaseModel
 ):
+
+    tail_number: str
+
+    current_aircraft_airport: str
+
+    previous_arrival_delay: float
+
+    aircraft_position_match: bool
 
     delay_probability: float
 
@@ -152,6 +181,10 @@ class PredictionResponse(
 
     model_version: str
 
+
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
 
 def classify_risk(
     probability: float,
@@ -165,6 +198,31 @@ def classify_risk(
 
     return "LOW"
 
+
+def get_aircraft_state(
+    tail_number: str,
+):
+
+    response = (
+        aircraft_table.get_item(
+
+            Key={
+                "tail_number":
+                    tail_number.upper()
+            },
+
+            ConsistentRead=True,
+        )
+    )
+
+    return response.get(
+        "Item"
+    )
+
+
+# ---------------------------------------------------------
+# Health endpoint
+# ---------------------------------------------------------
 
 @app.get(
     "/health"
@@ -182,6 +240,10 @@ def health():
     }
 
 
+# ---------------------------------------------------------
+# Prediction endpoint
+# ---------------------------------------------------------
+
 @app.post(
     "/api/v1/predictions",
     response_model=
@@ -191,6 +253,10 @@ def predict_delay(
     request:
         FlightPredictionRequest,
 ):
+
+    # ---------------------------------
+    # Check model availability
+    # ---------------------------------
 
     if model is None:
 
@@ -202,6 +268,57 @@ def predict_delay(
             ),
         )
 
+
+    # ---------------------------------
+    # Fetch live aircraft state
+    # ---------------------------------
+
+    aircraft_state = (
+        get_aircraft_state(
+            request.tail_number
+        )
+    )
+
+
+    if aircraft_state is None:
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Aircraft state not found "
+                f"for {request.tail_number}"
+            ),
+        )
+
+
+    # ---------------------------------
+    # Extract online features
+    # ---------------------------------
+
+    previous_arrival_delay = float(
+        aircraft_state.get(
+            "previous_arrival_delay",
+            0,
+        )
+    )
+
+
+    current_airport = (
+        aircraft_state.get(
+            "current_airport"
+        )
+    )
+
+
+    aircraft_position_match = int(
+        current_airport
+        == request.origin.upper()
+    )
+
+
+    # ---------------------------------
+    # Derive scheduled features
+    # ---------------------------------
 
     departure_hour = (
         request
@@ -215,6 +332,10 @@ def predict_delay(
         in (6, 7)
     )
 
+
+    # ---------------------------------
+    # Build model input
+    # ---------------------------------
 
     features = pd.DataFrame(
         [
@@ -253,16 +374,18 @@ def predict_delay(
                     is_weekend,
 
                 "previous_arrival_delay":
-                    request
-                    .previous_arrival_delay,
+                    previous_arrival_delay,
 
                 "aircraft_position_match":
-                    request
-                    .aircraft_position_match,
+                    aircraft_position_match,
             }
         ]
     )
 
+
+    # ---------------------------------
+    # ML inference
+    # ---------------------------------
 
     probability = float(
         model.predict_proba(
@@ -280,7 +403,27 @@ def predict_delay(
     )
 
 
+    # ---------------------------------
+    # Response
+    # ---------------------------------
+
     return PredictionResponse(
+
+        tail_number=
+            request
+            .tail_number
+            .upper(),
+
+        current_aircraft_airport=
+            current_airport,
+
+        previous_arrival_delay=
+            previous_arrival_delay,
+
+        aircraft_position_match=
+            bool(
+                aircraft_position_match
+            ),
 
         delay_probability=
             round(

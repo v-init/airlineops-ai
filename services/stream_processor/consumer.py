@@ -1,11 +1,24 @@
 import json
 
+import boto3
 from confluent_kafka import Consumer, KafkaError
 
 
 BOOTSTRAP_SERVERS = "localhost:9092"
 TOPIC = "flight-events"
 
+AWS_REGION = "us-east-1"
+DYNAMODB_TABLE = "airlineops-aircraft-state"
+
+
+dynamodb = boto3.resource(
+    "dynamodb",
+    region_name=AWS_REGION,
+)
+
+aircraft_table = dynamodb.Table(
+    DYNAMODB_TABLE
+)
 
 consumer = Consumer(
     {
@@ -21,74 +34,49 @@ consumer = Consumer(
 )
 
 
-# Local in-memory state for Day 1.
-#
-# Tomorrow we will replace this
-# with DynamoDB.
-aircraft_state = {}
-
-
 def update_aircraft_state(event):
 
-    event_type = event.get(
-        "event_type"
-    )
-
-    if event_type != "AIRCRAFT_ARRIVED":
+    if (
+        event.get("event_type")
+        != "AIRCRAFT_ARRIVED"
+    ):
         return
 
-    tail_number = event[
-        "tail_number"
-    ]
-
-    new_state = {
+    state = {
         "tail_number":
-            tail_number,
+            event["tail_number"],
 
         "current_airport":
-            event[
-                "destination"
-            ],
+            event["destination"],
 
         "previous_flight_id":
-            event[
-                "flight_id"
-            ],
+            event["flight_id"],
 
         "previous_arrival_delay":
-            event[
-                "arrival_delay_minutes"
-            ],
+            int(
+                event[
+                    "arrival_delay_minutes"
+                ]
+            ),
 
         "last_updated":
-            event[
-                "event_time"
-            ],
+            event["event_time"],
     }
 
-    aircraft_state[
-        tail_number
-    ] = new_state
-
-    print(
-        "\n------------------------------"
+    aircraft_table.put_item(
+        Item=state
     )
 
     print(
-        f"Updated aircraft: "
-        f"{tail_number}"
+        "\nPersisted aircraft state "
+        "to DynamoDB:"
     )
 
     print(
         json.dumps(
-            new_state,
+            state,
             indent=2,
         )
-    )
-
-    print(
-        f"\nTotal aircraft tracked: "
-        f"{len(aircraft_state)}"
     )
 
 
@@ -106,6 +94,11 @@ def main():
         f"Subscribed to: {TOPIC}"
     )
 
+    print(
+        f"DynamoDB table: "
+        f"{DYNAMODB_TABLE}"
+    )
+    
     print(
         "Press Ctrl+C to stop."
     )

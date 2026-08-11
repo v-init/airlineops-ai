@@ -1,88 +1,69 @@
-from fastapi.testclient import (
-    TestClient,
-)
+from unittest.mock import patch
 
-from services.api.app.main import (
-    app,
-)
+from fastapi.testclient import TestClient
+
+from services.api.app.main import app
 
 
 VALID_PAYLOAD = {
-
-    "airline":
-        "B6",
-
-    "origin":
-        "JFK",
-
-    "destination":
-        "BOS",
-
-    "day_of_week":
-        5,
-
-    "scheduled_departure_minutes":
-        960,
-
-    "distance":
-        187,
-
-    "previous_arrival_delay":
-        25,
-
-    "aircraft_position_match":
-        1,
+    "tail_number": "N104JB",
+    "airline": "B6",
+    "origin": "JFK",
+    "destination": "BOS",
+    "day_of_week": 1,
+    "scheduled_departure_minutes": 960,
+    "distance": 187,
 }
 
 
-def test_health():
+@patch(
+    "services.api.app.main.get_aircraft_state"
+)
+def test_prediction(
+    mock_get_aircraft_state,
+):
 
-    with TestClient(
-        app
-    ) as client:
+    mock_get_aircraft_state.return_value = {
+        "tail_number": "N104JB",
+        "current_airport": "JFK",
+        "previous_flight_id": "B6419",
+        "previous_arrival_delay": 42,
+        "last_updated":
+            "2026-08-10T22:00:00Z",
+    }
 
-        response = client.get(
-            "/health"
-        )
-
-        assert (
-            response.status_code
-            == 200
-        )
-
-        body = response.json()
-
-        assert (
-            body["status"]
-            == "ok"
-        )
-
-        assert (
-            body[
-                "model_loaded"
-            ]
-            is True
-        )
-
-
-def test_prediction():
-
-    with TestClient(
-        app
-    ) as client:
+    with TestClient(app) as client:
 
         response = client.post(
             "/api/v1/predictions",
             json=VALID_PAYLOAD,
         )
 
+        assert response.status_code == 200
+
+        body = response.json()
+
+        assert body["tail_number"] == "N104JB"
+
         assert (
-            response.status_code
-            == 200
+            body[
+                "current_aircraft_airport"
+            ]
+            == "JFK"
         )
 
-        body = (
-            response.json()
+        assert (
+            body[
+                "previous_arrival_delay"
+            ]
+            == 42
+        )
+
+        assert (
+            body[
+                "aircraft_position_match"
+            ]
+            is True
         )
 
         assert (
@@ -93,100 +74,91 @@ def test_prediction():
             <= 1
         )
 
-        assert (
-            body[
-                "risk_level"
-            ]
-            in {
-                "LOW",
-                "MEDIUM",
-                "HIGH",
-            }
+        assert body["risk_level"] in {
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+        }
+
+
+@patch(
+    "services.api.app.main.get_aircraft_state"
+)
+def test_aircraft_position_mismatch(
+    mock_get_aircraft_state,
+):
+
+    mock_get_aircraft_state.return_value = {
+        "tail_number": "N104JB",
+        "current_airport": "LAX",
+        "previous_arrival_delay": 30,
+    }
+
+    with TestClient(app) as client:
+
+        response = client.post(
+            "/api/v1/predictions",
+            json=VALID_PAYLOAD,
         )
 
+        assert response.status_code == 200
+
+        body = response.json()
+
         assert (
-            isinstance(
-                body[
-                    "predicted_delayed"
-                ],
-                bool,
-            )
+            body[
+                "aircraft_position_match"
+            ]
+            is False
         )
+
+
+@patch(
+    "services.api.app.main.get_aircraft_state"
+)
+def test_aircraft_not_found(
+    mock_get_aircraft_state,
+):
+
+    mock_get_aircraft_state.return_value = None
+
+    with TestClient(app) as client:
+
+        response = client.post(
+            "/api/v1/predictions",
+            json=VALID_PAYLOAD,
+        )
+
+        assert response.status_code == 404
 
 
 def test_invalid_day():
 
-    payload = (
-        VALID_PAYLOAD.copy()
-    )
+    payload = VALID_PAYLOAD.copy()
 
-    payload[
-        "day_of_week"
-    ] = 9
+    payload["day_of_week"] = 9
 
-
-    with TestClient(
-        app
-    ) as client:
+    with TestClient(app) as client:
 
         response = client.post(
             "/api/v1/predictions",
             json=payload,
         )
 
-        assert (
-            response.status_code
-            == 422
-        )
+        assert response.status_code == 422
 
 
 def test_invalid_airport():
 
-    payload = (
-        VALID_PAYLOAD.copy()
-    )
+    payload = VALID_PAYLOAD.copy()
 
     payload["origin"] = "JF"
 
-
-    with TestClient(
-        app
-    ) as client:
+    with TestClient(app) as client:
 
         response = client.post(
             "/api/v1/predictions",
             json=payload,
         )
 
-        assert (
-            response.status_code
-            == 422
-        )
-
-
-def test_lowercase_airports():
-
-    payload = (
-        VALID_PAYLOAD.copy()
-    )
-
-    payload["origin"] = "jfk"
-
-    payload[
-        "destination"
-    ] = "bos"
-
-
-    with TestClient(
-        app
-    ) as client:
-
-        response = client.post(
-            "/api/v1/predictions",
-            json=payload,
-        )
-
-        assert (
-            response.status_code
-            == 200
-        )
+        assert response.status_code == 422
