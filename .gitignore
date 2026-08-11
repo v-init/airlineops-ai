@@ -1,20 +1,23 @@
-# Python
-pycache/
+# Python virtual environment
+.venv/
+
+# Python cache
+__pycache__/
 *.py[cod]
+
+# Pytest / coverage
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Virtual environment
-.venv/
-venv/
-env/
+# Raw and processed datasets
+data/
 
-# IDE
+# IDE files
 .vscode/
 .idea/
 
-# OS
+# OS files
 .DS_Store
 Thumbs.db
 
@@ -22,12 +25,8 @@ Thumbs.db
 .env
 .env.*
 
-# Data
-data/raw/
-data/processed/
-
-# ML artifacts
-artifacts/*.joblib
+# AWS credentials - never commit
+.aws/
 
 # Logs
 *.log
